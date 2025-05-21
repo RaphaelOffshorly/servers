@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import fetch, { Request, Response } from 'node-fetch';
+import fetch from 'node-fetch';
+import express, { Request as ExpressRequest, Response as ExpressResponse } from "express";
+import dotenv from "dotenv";
 
 import * as repository from './operations/repository.js';
 import * as files from './operations/files.js';
@@ -27,6 +29,9 @@ import {
   isGitHubError,
 } from './common/errors.js';
 import { VERSION } from "./common/version.js";
+
+// Load environment variables
+dotenv.config();
 
 // If fetch doesn't exist in global scope, add it
 if (!globalThis.fetch) {
@@ -205,7 +210,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
   try {
     if (!request.params.arguments) {
       throw new Error("Arguments are required");
@@ -506,9 +511,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function runServer() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("GitHub MCP Server running on stdio");
+  const app = express();
+  let transport: SSEServerTransport;
+
+  app.get("/sse", async (req: ExpressRequest, res: ExpressResponse) => {
+    console.error("Received SSE connection");
+    transport = new SSEServerTransport("/message", res);
+    await server.connect(transport);
+
+    server.onclose = async () => {
+      await server.close();
+    };
+  });
+
+  app.post("/message", async (req: ExpressRequest, res: ExpressResponse) => {
+    console.error("Received message");
+    await transport.handlePostMessage(req, res);
+  });
+
+  // Handle cleanup on server shutdown
+  process.on("SIGINT", async () => {
+    await server.close();
+    process.exit(0);
+  });
+
+  // Use port 9000 as specified
+  const PORT = process.env.PORT || 9000;
+  app.listen(PORT, () => {
+    console.error(`GitHub MCP Server running on port ${PORT}`);
+  });
 }
 
 runServer().catch((error) => {

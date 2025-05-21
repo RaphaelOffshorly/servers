@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequest,
   CallToolRequestSchema,
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import express, { Request as ExpressRequest, Response as ExpressResponse } from "express";
+import dotenv from "dotenv";
+
+// Load environment variables
+dotenv.config();
 
 // Type definitions for tool arguments
 interface ListChannelsArgs {
@@ -381,12 +386,13 @@ class SlackClient {
 }
 
 async function main() {
+  // Get auth from environment variables
   const botToken = process.env.SLACK_BOT_TOKEN;
   const teamId = process.env.SLACK_TEAM_ID;
 
   if (!botToken || !teamId) {
     console.error(
-      "Please set SLACK_BOT_TOKEN and SLACK_TEAM_ID environment variables",
+      "Please set SLACK_BOT_TOKEN and SLACK_TEAM_ID environment variables in .env file",
     );
     process.exit(1);
   }
@@ -569,11 +575,36 @@ async function main() {
     };
   });
 
-  const transport = new StdioServerTransport();
-  console.error("Connecting server to transport...");
-  await server.connect(transport);
+  // Set up Express app and SSE transport
+  const app = express();
+  let transport: SSEServerTransport;
 
-  console.error("Slack MCP Server running on stdio");
+  app.get("/sse", async (req: ExpressRequest, res: ExpressResponse) => {
+    console.error("Received SSE connection");
+    transport = new SSEServerTransport("/message", res);
+    await server.connect(transport);
+
+    server.onclose = async () => {
+      await server.close();
+    };
+  });
+
+  app.post("/message", async (req: ExpressRequest, res: ExpressResponse) => {
+    console.error("Received message");
+    await transport.handlePostMessage(req, res);
+  });
+
+  // Handle cleanup on server shutdown
+  process.on("SIGINT", async () => {
+    await server.close();
+    process.exit(0);
+  });
+
+  // Use port 9001 as specified
+  const PORT = process.env.PORT || 9001;
+  app.listen(PORT, () => {
+    console.error(`Slack MCP Server running on port ${PORT}`);
+  });
 }
 
 main().catch((error) => {
