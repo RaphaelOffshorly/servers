@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import express, { Request as ExpressRequest, Response as ExpressResponse } from "express";
+import dotenv from "dotenv";
+
+// Load environment variables
+dotenv.config();
 
 const WEB_SEARCH_TOOL: Tool = {
   name: "brave_web_search",
@@ -78,12 +83,8 @@ const server = new Server(
   },
 );
 
-// Check for API key
-const BRAVE_API_KEY = process.env.BRAVE_API_KEY!;
-if (!BRAVE_API_KEY) {
-  console.error("Error: BRAVE_API_KEY environment variable is required");
-  process.exit(1);
-}
+// API key will be provided via headers during SSE connection
+let BRAVE_API_KEY: string;
 
 const RATE_LIMIT = {
   perSecond: 1,
@@ -312,7 +313,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [WEB_SEARCH_TOOL, LOCAL_SEARCH_TOOL],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
   try {
     const { name, arguments: args } = request.params;
 
@@ -365,9 +366,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function runServer() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Brave Search MCP Server running on stdio");
+  const app = express();
+  let transport: SSEServerTransport;
+
+  app.get("/sse", async (req: ExpressRequest, res: ExpressResponse) => {
+    console.error("Received SSE connection");
+    
+    // Get API key from headers
+    const apiKey = req.headers['x-brave-api-key'] as string;
+    if (!apiKey) {
+      res.status(400).json({ error: "Missing x-brave-api-key header" });
+      return;
+    }
+    
+    // Set the global API key for this connection
+    BRAVE_API_KEY = apiKey;
+    
+    transport = new SSEServerTransport("/message", res);
+    await server.connect(transport);
+
+    server.onclose = async () => {
+      await server.close();
+    };
+  });
+
+  app.post("/message", async (req: ExpressRequest, res: ExpressResponse) => {
+    console.error("Received message");
+    await transport.handlePostMessage(req, res);
+  });
+
+  // Handle cleanup on server shutdown
+  process.on("SIGINT", async () => {
+    await server.close();
+    process.exit(0);
+  });
+
+  // Use port 9002 to follow the pattern (GitHub: 9000, Slack: 9001)
+  const PORT = process.env.PORT || 9002;
+  app.listen(PORT, () => {
+    console.error(`Brave Search MCP Server running on port ${PORT}`);
+  });
 }
 
 runServer().catch((error) => {
