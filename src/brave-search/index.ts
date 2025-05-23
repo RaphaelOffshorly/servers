@@ -83,9 +83,6 @@ const server = new Server(
   },
 );
 
-// API key will be provided via headers during SSE connection
-let BRAVE_API_KEY: string;
-
 const RATE_LIMIT = {
   perSecond: 1,
   perMonth: 15000
@@ -178,20 +175,31 @@ function isBraveLocalSearchArgs(args: unknown): args is { query: string; count?:
   );
 }
 
-async function performWebSearch(query: string, count: number = 10, offset: number = 0) {
+async function braveRequest(url: string): Promise<Response> {
+  // Check if API key is available (following GitHub pattern)
+  const apiKey = process.env.BRAVE_API_KEY || process.env.BRAVE_SEARCH_API_KEY;
+  if (!apiKey) {
+    throw new Error('Brave API key not found. Please set BRAVE_API_KEY or BRAVE_SEARCH_API_KEY environment variable.');
+  }
+
   checkRateLimit();
+  
+  return await fetch(url, {
+    headers: {
+      'Accept': 'application/json',
+      'Accept-Encoding': 'gzip',
+      'X-Subscription-Token': apiKey
+    }
+  });
+}
+
+async function performWebSearch(query: string, count: number = 10, offset: number = 0) {
   const url = new URL('https://api.search.brave.com/res/v1/web/search');
   url.searchParams.set('q', query);
   url.searchParams.set('count', Math.min(count, 20).toString()); // API limit
   url.searchParams.set('offset', offset.toString());
 
-  const response = await fetch(url, {
-    headers: {
-      'Accept': 'application/json',
-      'Accept-Encoding': 'gzip',
-      'X-Subscription-Token': BRAVE_API_KEY
-    }
-  });
+  const response = await braveRequest(url.toString());
 
   if (!response.ok) {
     throw new Error(`Brave API error: ${response.status} ${response.statusText}\n${await response.text()}`);
@@ -212,7 +220,6 @@ async function performWebSearch(query: string, count: number = 10, offset: numbe
 }
 
 async function performLocalSearch(query: string, count: number = 5) {
-  checkRateLimit();
   // Initial search to get location IDs
   const webUrl = new URL('https://api.search.brave.com/res/v1/web/search');
   webUrl.searchParams.set('q', query);
@@ -220,13 +227,7 @@ async function performLocalSearch(query: string, count: number = 5) {
   webUrl.searchParams.set('result_filter', 'locations');
   webUrl.searchParams.set('count', Math.min(count, 20).toString());
 
-  const webResponse = await fetch(webUrl, {
-    headers: {
-      'Accept': 'application/json',
-      'Accept-Encoding': 'gzip',
-      'X-Subscription-Token': BRAVE_API_KEY
-    }
-  });
+  const webResponse = await braveRequest(webUrl.toString());
 
   if (!webResponse.ok) {
     throw new Error(`Brave API error: ${webResponse.status} ${webResponse.statusText}\n${await webResponse.text()}`);
@@ -249,16 +250,10 @@ async function performLocalSearch(query: string, count: number = 5) {
 }
 
 async function getPoisData(ids: string[]): Promise<BravePoiResponse> {
-  checkRateLimit();
   const url = new URL('https://api.search.brave.com/res/v1/local/pois');
   ids.filter(Boolean).forEach(id => url.searchParams.append('ids', id));
-  const response = await fetch(url, {
-    headers: {
-      'Accept': 'application/json',
-      'Accept-Encoding': 'gzip',
-      'X-Subscription-Token': BRAVE_API_KEY
-    }
-  });
+  
+  const response = await braveRequest(url.toString());
 
   if (!response.ok) {
     throw new Error(`Brave API error: ${response.status} ${response.statusText}\n${await response.text()}`);
@@ -269,16 +264,10 @@ async function getPoisData(ids: string[]): Promise<BravePoiResponse> {
 }
 
 async function getDescriptionsData(ids: string[]): Promise<BraveDescription> {
-  checkRateLimit();
   const url = new URL('https://api.search.brave.com/res/v1/local/descriptions');
   ids.filter(Boolean).forEach(id => url.searchParams.append('ids', id));
-  const response = await fetch(url, {
-    headers: {
-      'Accept': 'application/json',
-      'Accept-Encoding': 'gzip',
-      'X-Subscription-Token': BRAVE_API_KEY
-    }
-  });
+  
+  const response = await braveRequest(url.toString());
 
   if (!response.ok) {
     throw new Error(`Brave API error: ${response.status} ${response.statusText}\n${await response.text()}`);
@@ -371,17 +360,6 @@ async function runServer() {
 
   app.get("/sse", async (req: ExpressRequest, res: ExpressResponse) => {
     console.error("Received SSE connection");
-    
-    // Get API key from headers
-    const apiKey = req.headers['x-brave-api-key'] as string;
-    if (!apiKey) {
-      res.status(400).json({ error: "Missing x-brave-api-key header" });
-      return;
-    }
-    
-    // Set the global API key for this connection
-    BRAVE_API_KEY = apiKey;
-    
     transport = new SSEServerTransport("/message", res);
     await server.connect(transport);
 
