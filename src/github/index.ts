@@ -512,7 +512,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
 async function runServer() {
   const app = express();
-  let transport: SSEServerTransport;
+  let transport: SSEServerTransport | undefined;
 
   app.get("/sse", async (req: ExpressRequest, res: ExpressResponse) => {
     console.error("Received SSE connection");
@@ -526,6 +526,11 @@ async function runServer() {
 
   app.post("/message", async (req: ExpressRequest, res: ExpressResponse) => {
     console.error("Received message");
+    if (!transport) {
+      console.error("ERROR: SSE connection not established");
+      res.status(500).json({ error: "SSE connection not established" });
+      return;
+    }
     await transport.handlePostMessage(req, res);
   });
 
