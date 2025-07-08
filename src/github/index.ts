@@ -10,6 +10,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import fetch from 'node-fetch';
 import express, { Request as ExpressRequest, Response as ExpressResponse } from "express";
 import dotenv from "dotenv";
+import CryptoJS from "crypto-js";
 
 import * as repository from './operations/repository.js';
 import * as files from './operations/files.js';
@@ -36,6 +37,49 @@ dotenv.config();
 // If fetch doesn't exist in global scope, add it
 if (!globalThis.fetch) {
   globalThis.fetch = fetch as unknown as typeof global.fetch;
+}
+
+// Global access token that can be dynamically set
+let dynamicAccessToken: string | null = null;
+
+/**
+ * Decrypt AES-encrypted token using the provided encryption key
+ * @param encryptedToken - The encrypted token (base64 encoded)
+ * @param encryptionKey - The encryption key used for decryption
+ * @returns The decrypted token string
+ */
+function decryptToken(encryptedToken: string, encryptionKey: string): string {
+  try {
+    // Decrypt the token using AES
+    const decryptedBytes = CryptoJS.AES.decrypt(encryptedToken, encryptionKey);
+    const decryptedToken = decryptedBytes.toString(CryptoJS.enc.Utf8);
+    
+    if (!decryptedToken) {
+      throw new Error("Failed to decrypt token - invalid encryption key or corrupted data");
+    }
+    
+    return decryptedToken;
+  } catch (error) {
+    console.error("Error decrypting token:", error);
+    throw new Error(`Token decryption failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// Function to get current token (dynamic or from env)
+function getAccessToken(): string | undefined {
+  return dynamicAccessToken || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+}
+
+// Correct implementation of withToken function
+async function withToken<T>(fn: () => Promise<T>): Promise<T> {
+  const token = getAccessToken();
+  try {
+    // Call the function, which has access to the token via closure
+    return await fn();
+  } catch (error) {
+    console.error("Error in API call with token:", error);
+    throw error;
+  }
 }
 
 const server = new Server(
@@ -216,10 +260,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       throw new Error("Arguments are required");
     }
 
+    // Check if token is available when needed
+    if (!getAccessToken()) {
+      throw new Error("GitHub access token not provided. Please connect with a valid token.");
+    }
+
     switch (request.params.name) {
       case "fork_repository": {
         const args = repository.ForkRepositorySchema.parse(request.params.arguments);
-        const fork = await repository.forkRepository(args.owner, args.repo, args.organization);
+        const token = getAccessToken();
+        const fork = await repository.forkRepository(
+          args.owner, 
+          args.repo, 
+          args.organization, 
+          token
+        );
         return {
           content: [{ type: "text", text: JSON.stringify(fork, null, 2) }],
         };
@@ -227,11 +282,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "create_branch": {
         const args = branches.CreateBranchSchema.parse(request.params.arguments);
+        const token = getAccessToken();
         const branch = await branches.createBranchFromRef(
           args.owner,
           args.repo,
           args.branch,
-          args.from_branch
+          args.from_branch,
+          token
         );
         return {
           content: [{ type: "text", text: JSON.stringify(branch, null, 2) }],
@@ -240,11 +297,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "search_repositories": {
         const args = repository.SearchRepositoriesSchema.parse(request.params.arguments);
-        const results = await repository.searchRepositories(
+        const results = await withToken(() => repository.searchRepositories(
           args.query,
           args.page,
           args.perPage
-        );
+        ));
         return {
           content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
         };
@@ -252,7 +309,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "create_repository": {
         const args = repository.CreateRepositoryOptionsSchema.parse(request.params.arguments);
-        const result = await repository.createRepository(args);
+        const result = await withToken(() => repository.createRepository(args));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -260,12 +317,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "get_file_contents": {
         const args = files.GetFileContentsSchema.parse(request.params.arguments);
-        const contents = await files.getFileContents(
+        const contents = await withToken(() => files.getFileContents(
           args.owner,
           args.repo,
           args.path,
           args.branch
-        );
+        ));
         return {
           content: [{ type: "text", text: JSON.stringify(contents, null, 2) }],
         };
@@ -273,7 +330,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "create_or_update_file": {
         const args = files.CreateOrUpdateFileSchema.parse(request.params.arguments);
-        const result = await files.createOrUpdateFile(
+        const result = await withToken(() => files.createOrUpdateFile(
           args.owner,
           args.repo,
           args.path,
@@ -281,7 +338,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           args.message,
           args.branch,
           args.sha
-        );
+        ));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -289,13 +346,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "push_files": {
         const args = files.PushFilesSchema.parse(request.params.arguments);
-        const result = await files.pushFiles(
+        const result = await withToken(() => files.pushFiles(
           args.owner,
           args.repo,
           args.branch,
           args.files,
           args.message
-        );
+        ));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -309,7 +366,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           console.error(`[DEBUG] Attempting to create issue in ${owner}/${repo}`);
           console.error(`[DEBUG] Issue options:`, JSON.stringify(options, null, 2));
           
-          const issue = await issues.createIssue(owner, repo, options);
+          const issue = await withToken(() => issues.createIssue(owner, repo, options));
           
           console.error(`[DEBUG] Issue created successfully`);
           return {
@@ -341,7 +398,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "create_pull_request": {
         const args = pulls.CreatePullRequestSchema.parse(request.params.arguments);
-        const pullRequest = await pulls.createPullRequest(args);
+        const pullRequest = await withToken(() => pulls.createPullRequest(args));
         return {
           content: [{ type: "text", text: JSON.stringify(pullRequest, null, 2) }],
         };
@@ -349,7 +406,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "search_code": {
         const args = search.SearchCodeSchema.parse(request.params.arguments);
-        const results = await search.searchCode(args);
+        const results = await withToken(() => search.searchCode(args));
         return {
           content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
         };
@@ -357,7 +414,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "search_issues": {
         const args = search.SearchIssuesSchema.parse(request.params.arguments);
-        const results = await search.searchIssues(args);
+        const results = await withToken(() => search.searchIssues(args));
         return {
           content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
         };
@@ -365,7 +422,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "search_users": {
         const args = search.SearchUsersSchema.parse(request.params.arguments);
-        const results = await search.searchUsers(args);
+        const results = await withToken(() => search.searchUsers(args));
         return {
           content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
         };
@@ -374,7 +431,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "list_issues": {
         const args = issues.ListIssuesOptionsSchema.parse(request.params.arguments);
         const { owner, repo, ...options } = args;
-        const result = await issues.listIssues(owner, repo, options);
+        const result = await withToken(() => issues.listIssues(owner, repo, options));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -383,7 +440,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "update_issue": {
         const args = issues.UpdateIssueOptionsSchema.parse(request.params.arguments);
         const { owner, repo, issue_number, ...options } = args;
-        const result = await issues.updateIssue(owner, repo, issue_number, options);
+        const result = await withToken(() => issues.updateIssue(owner, repo, issue_number, options));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -392,7 +449,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "add_issue_comment": {
         const args = issues.IssueCommentSchema.parse(request.params.arguments);
         const { owner, repo, issue_number, body } = args;
-        const result = await issues.addIssueComment(owner, repo, issue_number, body);
+        const result = await withToken(() => issues.addIssueComment(owner, repo, issue_number, body));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -400,13 +457,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "list_commits": {
         const args = commits.ListCommitsSchema.parse(request.params.arguments);
-        const results = await commits.listCommits(
+        const results = await withToken(() => commits.listCommits(
           args.owner,
           args.repo,
           args.page,
           args.perPage,
           args.sha
-        );
+        ));
         return {
           content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
         };
@@ -414,7 +471,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "get_issue": {
         const args = issues.GetIssueSchema.parse(request.params.arguments);
-        const issue = await issues.getIssue(args.owner, args.repo, args.issue_number);
+        const issue = await withToken(() => issues.getIssue(args.owner, args.repo, args.issue_number));
         return {
           content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
         };
@@ -422,7 +479,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "get_pull_request": {
         const args = pulls.GetPullRequestSchema.parse(request.params.arguments);
-        const pullRequest = await pulls.getPullRequest(args.owner, args.repo, args.pull_number);
+        const pullRequest = await withToken(() => pulls.getPullRequest(args.owner, args.repo, args.pull_number));
         return {
           content: [{ type: "text", text: JSON.stringify(pullRequest, null, 2) }],
         };
@@ -431,7 +488,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "list_pull_requests": {
         const args = pulls.ListPullRequestsSchema.parse(request.params.arguments);
         const { owner, repo, ...options } = args;
-        const pullRequests = await pulls.listPullRequests(owner, repo, options);
+        const pullRequests = await withToken(() => pulls.listPullRequests(owner, repo, options));
         return {
           content: [{ type: "text", text: JSON.stringify(pullRequests, null, 2) }],
         };
@@ -440,7 +497,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "create_pull_request_review": {
         const args = pulls.CreatePullRequestReviewSchema.parse(request.params.arguments);
         const { owner, repo, pull_number, ...options } = args;
-        const review = await pulls.createPullRequestReview(owner, repo, pull_number, options);
+        const review = await withToken(() => pulls.createPullRequestReview(owner, repo, pull_number, options));
         return {
           content: [{ type: "text", text: JSON.stringify(review, null, 2) }],
         };
@@ -449,7 +506,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "merge_pull_request": {
         const args = pulls.MergePullRequestSchema.parse(request.params.arguments);
         const { owner, repo, pull_number, ...options } = args;
-        const result = await pulls.mergePullRequest(owner, repo, pull_number, options);
+        const result = await withToken(() => pulls.mergePullRequest(owner, repo, pull_number, options));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -457,7 +514,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "get_pull_request_files": {
         const args = pulls.GetPullRequestFilesSchema.parse(request.params.arguments);
-        const files = await pulls.getPullRequestFiles(args.owner, args.repo, args.pull_number);
+        const files = await withToken(() => pulls.getPullRequestFiles(args.owner, args.repo, args.pull_number));
         return {
           content: [{ type: "text", text: JSON.stringify(files, null, 2) }],
         };
@@ -465,7 +522,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "get_pull_request_status": {
         const args = pulls.GetPullRequestStatusSchema.parse(request.params.arguments);
-        const status = await pulls.getPullRequestStatus(args.owner, args.repo, args.pull_number);
+        const status = await withToken(() => pulls.getPullRequestStatus(args.owner, args.repo, args.pull_number));
         return {
           content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
         };
@@ -474,7 +531,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "update_pull_request_branch": {
         const args = pulls.UpdatePullRequestBranchSchema.parse(request.params.arguments);
         const { owner, repo, pull_number, expected_head_sha } = args;
-        await pulls.updatePullRequestBranch(owner, repo, pull_number, expected_head_sha);
+        await withToken(() => pulls.updatePullRequestBranch(owner, repo, pull_number, expected_head_sha));
         return {
           content: [{ type: "text", text: JSON.stringify({ success: true }, null, 2) }],
         };
@@ -482,7 +539,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "get_pull_request_comments": {
         const args = pulls.GetPullRequestCommentsSchema.parse(request.params.arguments);
-        const comments = await pulls.getPullRequestComments(args.owner, args.repo, args.pull_number);
+        const comments = await withToken(() => pulls.getPullRequestComments(args.owner, args.repo, args.pull_number));
         return {
           content: [{ type: "text", text: JSON.stringify(comments, null, 2) }],
         };
@@ -490,7 +547,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
       case "get_pull_request_reviews": {
         const args = pulls.GetPullRequestReviewsSchema.parse(request.params.arguments);
-        const reviews = await pulls.getPullRequestReviews(args.owner, args.repo, args.pull_number);
+        const reviews = await withToken(() => pulls.getPullRequestReviews(args.owner, args.repo, args.pull_number));
         return {
           content: [{ type: "text", text: JSON.stringify(reviews, null, 2) }],
         };
@@ -516,6 +573,50 @@ async function runServer() {
 
   app.get("/sse", async (req: ExpressRequest, res: ExpressResponse) => {
     console.error("Received SSE connection");
+    
+    // Get token and encryption key from query parameters
+    const token = req.query.token as string | undefined;
+    const encryptionKey = req.query.encryption_key as string | undefined;
+    const isEncrypted = req.query.encrypted === 'true';
+    
+    if (token) {
+      try {
+        if (isEncrypted) {
+          // Handle encrypted token
+          console.error("Encrypted access token received from client");
+          
+          // Get encryption key from query parameter or environment variable
+          const key = encryptionKey || process.env.GITHUB_TOKEN_ENCRYPTION_KEY;
+          
+          if (!key) {
+            console.error("ERROR: Encryption key not provided for encrypted token");
+            res.status(400).json({ 
+              error: "Encryption key required for encrypted token. Provide 'encryption_key' query parameter or set GITHUB_TOKEN_ENCRYPTION_KEY environment variable." 
+            });
+            return;
+          }
+          
+          // Decrypt the token
+          const decryptedToken = decryptToken(token, key);
+          dynamicAccessToken = decryptedToken;
+          console.error("Access token successfully decrypted");
+        } else {
+          // Handle plain text token
+          console.error("Plain text access token received from client");
+          dynamicAccessToken = token;
+        }
+      } catch (error) {
+        console.error("ERROR: Failed to process token:", error);
+        res.status(400).json({ 
+          error: `Failed to process token: ${error instanceof Error ? error.message : String(error)}` 
+        });
+        return;
+      }
+    } else {
+      console.error("No access token provided by client, will use environment variable if available");
+      dynamicAccessToken = null;
+    }
+
     transport = new SSEServerTransport("/message", res);
     await server.connect(transport);
 

@@ -30,7 +30,8 @@ const USER_AGENT = `modelcontextprotocol/servers/github/v${VERSION} ${getUserAge
 
 export async function githubRequest(
   url: string,
-  options: RequestOptions = {}
+  options: RequestOptions = {},
+  token?: string
 ): Promise<unknown> {
   const headers: Record<string, string> = {
     "Accept": "application/vnd.github.v3+json",
@@ -39,8 +40,10 @@ export async function githubRequest(
     ...options.headers,
   };
 
-  if (process.env.GITHUB_PERSONAL_ACCESS_TOKEN) {
-    headers["Authorization"] = `Bearer ${process.env.GITHUB_PERSONAL_ACCESS_TOKEN}`;
+  // Use token parameter first, then fallback to environment variable
+  const authToken = token || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+  if (authToken) {
+    headers["Authorization"] = `Bearer ${authToken}`;
   }
 
   const response = await fetch(url, {
@@ -135,4 +138,9 @@ export async function checkUserExists(username: string): Promise<boolean> {
     }
     throw error;
   }
+}
+
+// Add this helper function to integrate with dynamic token management
+export async function withToken<T>(fn: (token?: string) => Promise<T>, token?: string): Promise<T> {
+  return fn(token);
 }

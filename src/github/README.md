@@ -6,6 +6,27 @@
 
 MCP Server for the GitHub API, enabling file operations, repository management, search functionality, and more.
 
+## Authentication
+
+This server supports two methods for authentication with the GitHub API:
+
+### 1. Environment Variable (Static)
+
+Set the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable before starting the server.
+
+### 2. Dynamic Authentication (Recommended)
+
+Pass your GitHub access token directly with each SSE connection by adding a token parameter to the SSE URL:
+
+```
+http://localhost:9000/sse?token=YOUR_GITHUB_TOKEN
+```
+
+This allows:
+- Different users to use their own tokens
+- Switching tokens without restarting the server
+- Enhanced security by not storing tokens in environment variables
+
 ### Features
 
 - **Automatic Branch Creation**: When creating/updating files or pushing changes, branches are automatically created if they don't exist
@@ -281,162 +302,162 @@ MCP Server for the GitHub API, enabling file operations, repository management, 
      - `pull_number` (number): Pull request number
    - Returns: Array of pull request reviews with details like the review state (APPROVED, CHANGES_REQUESTED, etc.), reviewer, and review body
 
-## Search Query Syntax
+## Implementation Notes
 
-### Code Search
-- `language:javascript`: Search by programming language
-- `repo:owner/name`: Search in specific repository
-- `path:app/src`: Search in specific path
-- `extension:js`: Search by file extension
-- Example: `q: "import express" language:typescript path:src/`
+### Dynamic Token Authentication
 
-### Issues Search
-- `is:issue` or `is:pr`: Filter by type
-- `is:open` or `is:closed`: Filter by state
-- `label:bug`: Search by label
-- `author:username`: Search by author
-- Example: `q: "memory leak" is:issue is:open label:bug`
+The server supports dynamic authentication by:
 
-### Users Search
-- `type:user` or `type:org`: Filter by account type
-- `followers:>1000`: Filter by followers
-- `location:London`: Search by location
-- Example: `q: "fullstack developer" location:London followers:>100`
+1. Accepting a token parameter in the SSE connection URL: `/sse?token=YOUR_TOKEN`
+2. Storing this token for the duration of the connection
+3. Using the token for all GitHub API requests during that session
+4. Falling back to the environment variable if no token is provided
 
-For detailed search syntax, see [GitHub's searching documentation](https://docs.github.com/en/search-github/searching-on-github).
+This implementation allows:
+- Seamless token switching without server restarts
+- Different users to use their own tokens in a multi-user environment
+- Improved security by not storing tokens in environment variables
+- Compatibility with both token-based and environment-based authentication
 
-## Setup
+### Token Precedence
 
-### Personal Access Token
-[Create a GitHub Personal Access Token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens) with appropriate permissions:
-   - Go to [Personal access tokens](https://github.com/settings/tokens) (in GitHub Settings > Developer settings)
-   - Select which repositories you'd like this token to have access to (Public, All, or Select)
-   - Create a token with the `repo` scope ("Full control of private repositories")
-     - Alternatively, if working only with public repositories, select only the `public_repo` scope
-   - Copy the generated token
+Tokens are used in the following order:
+1. Dynamic token from SSE connection (highest precedence)
+2. `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable (fallback)
 
-### Usage with Claude Desktop
-To use this with Claude Desktop, add the following to your `claude_desktop_config.json`:
+If neither is available, the server will return an error message indicating that authentication is required.
 
-#### Docker
-```json
-{
-  "mcpServers": {
-    "github": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "-e",
-        "GITHUB_PERSONAL_ACCESS_TOKEN",
-        "mcp/github"
-      ],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_TOKEN>"
-      }
-    }
-  }
-}
-```
+## Connecting with a Token
 
-#### NPX
+### JavaScript/TypeScript Client Example
 
-```json
-{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
-      ],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_TOKEN>"
-      }
-    }
-  }
-}
-```
+```javascript
+// Example of connecting to the server with a token using EventSource
+const token = "your_github_personal_access_token";
+const serverUrl = "http://localhost:9000";
 
-### Usage with VS Code
+// Connect with token in URL parameter
+const eventSource = new EventSource(`${serverUrl}/sse?token=${encodeURIComponent(token)}`);
 
-For quick installation, use one of the installation buttons below:
-
-[![Install with NPX in VS Code](https://img.shields.io/badge/VS_Code-NPM-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=github&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22github_token%22%2C%22description%22%3A%22GitHub%20Personal%20Access%20Token%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40modelcontextprotocol%2Fserver-github%22%5D%2C%22env%22%3A%7B%22GITHUB_PERSONAL_ACCESS_TOKEN%22%3A%22%24%7Binput%3Agithub_token%7D%22%7D%7D) [![Install with NPX in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-NPM-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=github&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22github_token%22%2C%22description%22%3A%22GitHub%20Personal%20Access%20Token%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40modelcontextprotocol%2Fserver-github%22%5D%2C%22env%22%3A%7B%22GITHUB_PERSONAL_ACCESS_TOKEN%22%3A%22%24%7Binput%3Agithub_token%7D%22%7D%7D&quality=insiders)
-
-[![Install with Docker in VS Code](https://img.shields.io/badge/VS_Code-Docker-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=github&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22github_token%22%2C%22description%22%3A%22GitHub%20Personal%20Access%20Token%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22docker%22%2C%22args%22%3A%5B%22run%22%2C%22-i%22%2C%22--rm%22%2C%22mcp%2Fgithub%22%5D%2C%22env%22%3A%7B%22GITHUB_PERSONAL_ACCESS_TOKEN%22%3A%22%24%7Binput%3Agithub_token%7D%22%7D%7D) [![Install with Docker in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Docker-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=github&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22github_token%22%2C%22description%22%3A%22GitHub%20Personal%20Access%20Token%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22docker%22%2C%22args%22%3A%5B%22run%22%2C%22-i%22%2C%22--rm%22%2C%22mcp%2Fgithub%22%5D%2C%22env%22%3A%7B%22GITHUB_PERSONAL_ACCESS_TOKEN%22%3A%22%24%7Binput%3Agithub_token%7D%22%7D%7D&quality=insiders)
-
-
-For manual installation, add the following JSON block to your User Settings (JSON) file in VS Code. You can do this by pressing `Ctrl + Shift + P` and typing `Preferences: Open User Settings (JSON)`.
-
-Optionally, you can add it to a file called `.vscode/mcp.json` in your workspace. This will allow you to share the configuration with others.
-
-> Note that the `mcp` key is not needed in the `.vscode/mcp.json` file.
-
-#### Docker
-
-```json
-{
-  "mcp": {
-    "inputs": [
-      {
-        "type": "promptString",
-        "id": "github_token",
-        "description": "GitHub Personal Access Token",
-        "password": true
-      }
-    ],
-    "servers": {
-      "github": {
-        "command": "docker",
-        "args": ["run", "-i", "--rm", "mcp/github"],
-        "env": {
-          "GITHUB_PERSONAL_ACCESS_TOKEN": "${input:github_token}"
+eventSource.onopen = () => {
+  console.log("Connection established");
+  
+  // Now you can send requests to the server
+  fetch(`${serverUrl}/message`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "1",
+      method: "callTool",
+      params: {
+        name: "list_repositories",
+        arguments: {
+          // Your arguments here
         }
       }
-    }
-  }
-}
+    })
+  });
+};
+
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log("Received response:", data);
+};
+
+eventSource.onerror = (error) => {
+  console.error("EventSource error:", error);
+  eventSource.close();
+};
 ```
 
-#### NPX
+### Python Client Example
 
-```json
-{
-  "mcp": {
-    "inputs": [
-      {
-        "type": "promptString",
-        "id": "github_token",
-        "description": "GitHub Personal Access Token",
-        "password": true
-      }
-    ],
-    "servers": {
-      "github": {
-        "command": "npx",
-        "args": [
-          "-y",
-          "@modelcontextprotocol/server-github"
-        ],
-        "env": {
-          "GITHUB_PERSONAL_ACCESS_TOKEN": "${input:github_token}"
+```python
+import requests
+import json
+import sseclient
+import threading
+import urllib.parse
+
+# GitHub token and server URL
+token = "your_github_personal_access_token"
+server_url = "http://localhost:9000"
+
+# Connect with token in URL parameter
+sse_url = f"{server_url}/sse?token={urllib.parse.quote(token)}"
+
+def sse_client():
+    headers = {'Accept': 'text/event-stream'}
+    response = requests.get(sse_url, headers=headers, stream=True)
+    client = sseclient.SSEClient(response)
+    
+    for event in client.events():
+        print(f"Received: {event.data}")
+
+# Start SSE client in background thread
+threading.Thread(target=sse_client, daemon=True).start()
+
+# Example request
+request_data = {
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "callTool",
+    "params": {
+        "name": "list_repositories",
+        "arguments": {
+            # Your arguments here
         }
-      }
     }
-  }
 }
+
+# Send request after connection is established
+# In a real application, you might want to wait for confirmation of SSE connection
+import time
+time.sleep(1)  # Simple delay to ensure connection is established
+
+response = requests.post(
+    f"{server_url}/message",
+    headers={"Content-Type": "application/json"},
+    data=json.dumps(request_data)
+)
+
+print(f"Request sent, status: {response.status_code}")
 ```
 
-## Build
+## Running the Server
 
-Docker build:
+### Option 1: Using Environment Variable
 
 ```bash
-docker build -t mcp/github -f src/github/Dockerfile .
+# Set the token in your environment
+export GITHUB_PERSONAL_ACCESS_TOKEN=your_token_here
+
+# Start the server
+node index.js
 ```
 
-## License
+### Option 2: Using Dynamic Token
 
-This MCP server is licensed under the MIT License. This means you are free to use, modify, and distribute the software, subject to the terms and conditions of the MIT License. For more details, please see the LICENSE file in the project repository.
+```bash
+# Start the server without setting the environment variable
+node index.js
+
+# Connect to the server with your token in the client code
+# See the "Connecting with a Token" section for examples
+```
+
+### Using Docker
+
+```bash
+# Build the Docker image
+docker build -t github-mcp-server .
+
+# Run with environment variable
+docker run -p 9000:9000 -e GITHUB_PERSONAL_ACCESS_TOKEN=your_token_here github-mcp-server
+
+# Or run without the token to use dynamic authentication
+docker run -p 9000:9000 github-mcp-server
+```
